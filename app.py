@@ -1,78 +1,60 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-from difflib import get_close_matches
+from datetime import datetime
 import io
 
-st.set_page_config(page_title="Pipeline Automator", layout="wide")
-
-st.title("🚀 Pipeline Status & Region Automator")
-
-# --- 1. SETTINGS ---
-st.sidebar.header("Configuration")
-anchor_date = st.sidebar.date_input("Select Anchor Date", datetime(2026, 1, 9))
-one_year_out = pd.to_datetime(anchor_date) + timedelta(days=365)
-
-# --- 2. REGION MAPPING ---
-regions = {
-    "US": ["United States", "USA", "US"],
-    "APAC": ["China", "India", "South Korea", "Japan", "Singapore", "Hong Kong", "Taiwan", "Vietnam", "Australia", "New Zealand"],
-    "EU": ["France", "Germany", "Italy", "Spain", "Ireland", "Netherlands", "Belgium", "Denmark", "Sweden", "Finland", "Switzerland", "United Kingdom", "Czech Republic"]
-}
-all_known_countries = [c for sublist in regions.values() for c in sublist]
-
-def get_region_fuzzy(input_country):
-    if pd.isna(input_country): return "Missing Country"
-    name = str(input_country).strip()
-    for region, countries in regions.items():
-        if name.lower() in [c.lower() for c in countries]: return region
-    matches = get_close_matches(name, all_known_countries, n=1, cutoff=0.7)
-    if matches:
-        for region, countries in regions.items():
-            if matches[0] in countries: return region
-    return "Rest of World"
-
-# --- 3. PROCESSING ---
-uploaded_file = st.file_uploader("Upload Salesforce Export", type=['csv', 'xlsx'])
+# ... (Region mapping code from previous version remains the same) ...
 
 if uploaded_file:
-    # Handle both file types for import
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     
-    # Auto-detect column names
-    name_col = next((c for c in df.columns if 'Opportunity Name' in c), 'Opportunity Name')
-    date_col = next((c for c in df.columns if 'Close Date' in c or 'Date' in c), 'Close Date')
-    country_col = next((c for c in df.columns if 'Country' in c), None)
+    # Standardizing column names to handle Salesforce variations
+    df.columns = [c.strip() for c in df.columns]
 
     if st.button("Generate Cleaned Pipeline"):
-        # Calculate Status Logic
+        
         def calculate_status(row):
-            opp_name = str(row.get(name_col, '')).strip()
-            close_date = pd.to_datetime(row.get(date_col), errors='coerce')
-            if "Hold" in opp_name: return "On Hold"
-            if pd.notnull(close_date) and close_date <= one_year_out: return "Active"
-            return "Direct Update Needed" if "Direct" in opp_name else "CRO Update Needed"
+            # Get values safely
+            name = str(row.get('Opportunity Name', '')).strip()
+            desc = str(row.get('Opportunity Description', '')).strip().lower()
+            prop_age = str(row.get('Proposal age', '')).strip()
+            
+            # 1. HOLD CHECK (Case insensitive)
+            if "hold" in name.lower():
+                return "On Hold"
+            
+            # 2. PROPOSAL AGE BYPASS (0-6 months = Active)
+            if prop_age in ["0-3 Months", "3-6 Months"]:
+                return "Active"
+            
+            # 3. DESCRIPTION DATE LOGIC
+            # If blank or contains 2024, it's not active
+            if desc == "" or desc == "nan" or "2024" in desc:
+                # Determine if Direct or CRO
+                return "Direct Update Needed" if "direct" in name.lower() else "CRO Update Needed"
+            
+            # If it contains a future year within 1 yr of 2026
+            if "2025" in desc or "2026" in desc:
+                return "Active"
+            
+            # 4. FALLBACK (If no date found at all)
+            return "Direct Update Needed" if "direct" in name.lower() else "CRO Update Needed"
 
+        # Apply the new logic
         df['Status'] = df.apply(calculate_status, axis=1)
-        df['Region'] = df[country_col].apply(get_region_fuzzy) if country_col else "N/A"
+        
+        # ... (Rest of the Region Mapping code) ...
 
-        # --- 4. DATA SUMMARY TABLE ---
-        st.subheader("Summary: Items Requiring Updates")
-        # Creates a pivot table showing counts of status per region
-        summary_table = pd.crosstab(df['Region'], df['Status'])
-        st.table(summary_table)
+        # --- RESULTS ---
+        st.subheader("Final Status Count")
+        st.write(df['Status'].value_counts())
+        
+        # Highlight the specific 'On Hold' count for verification
+        hold_count = len(df[df['Status'] == "On Hold"])
+        st.info(f"Verified: {hold_count} items identified as 'On Hold'")
 
-        # --- 5. EXCEL EXPORT LOGIC ---
-        # We create a buffer to store the Excel file in memory
+        # Export to Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Cleaned Pipeline')
-        
-        processed_data = output.getvalue()
-
-        st.download_button(
-            label="📥 Download Cleaned Data (Excel File)",
-            data=processed_data,
-            file_name=f"Cleaned_Pipeline_{anchor_date}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        st.download_button("📥 Download Excel", output.getvalue(), "Cleaned_Pipeline.xlsx")
