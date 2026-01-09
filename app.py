@@ -123,4 +123,4 @@ if uploaded_file:
         st.download_button("📥 Download Final Excel", output.getvalue(), "Final_Pipeline_Master.xlsx")
 
         st.subheader("Logic Preview")
-        st.dataframe(df[[nk, 'Region', 'Status', dk]].head(100), use_container_width=True)
+        st.dataframe(df[[nk, 'Region', 'Status', dk]].head(100), use_container_width=True) 
