@@ -1,112 +1,74 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-from difflib import get_close_matches
+from datetime import datetime
 import io
 
 st.set_page_config(page_title="Pipeline Automator", layout="wide")
 
-st.title("🚀 Pipeline Status & Region Automator")
+st.title("🚀 Pipeline Status Automator (Refined)")
 
-# --- 1. SETTINGS & ANCHOR ---
+# --- 1. SETTINGS ---
 st.sidebar.header("Configuration")
 anchor_date = st.sidebar.date_input("Select Anchor Date", datetime(2026, 1, 9))
-one_year_out = pd.to_datetime(anchor_date) + timedelta(days=365)
 
-# --- 2. REGION MAPPING LOGIC ---
-regions = {
-    "US": ["United States", "USA", "US"],
-    "APAC": ["China", "India", "South Korea", "Japan", "Singapore", "Hong Kong", "Taiwan", "Vietnam", "Australia", "New Zealand"],
-    "EU": ["France", "Germany", "Italy", "Spain", "Ireland", "Netherlands", "Belgium", "Denmark", "Sweden", "Finland", "Switzerland", "United Kingdom", "Czech Republic"]
-}
-all_known_countries = [c for sublist in regions.values() for c in sublist]
-
-def get_region_fuzzy(input_country):
-    if pd.isna(input_country): return "Missing Country"
-    name = str(input_country).strip()
-    for region, countries in regions.items():
-        if name.lower() in [c.lower() for c in countries]: return region
-    matches = get_close_matches(name, all_known_countries, n=1, cutoff=0.7)
-    if matches:
-        for region, countries in regions.items():
-            if matches[0] in countries: return region
-    return "Rest of World"
-
-# --- 3. FILE UPLOADER ---
-uploaded_file = st.file_uploader("Upload Salesforce Export (CSV or Excel)", type=['csv', 'xlsx'])
+# --- 2. FILE UPLOADER ---
+uploaded_file = st.file_uploader("Upload Salesforce Export", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    # Read the file
-    if uploaded_file.name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-    
-    # Clean column names (remove hidden spaces)
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     df.columns = [c.strip() for c in df.columns]
 
     if st.button("Generate Cleaned Pipeline"):
         
-        # --- 4. THE CUSTOM STATUS LOGIC ---
         def calculate_status(row):
-            # Get values safely and handle "NaN" values
-            name = str(row.get('Opportunity Name', '')).strip()
-            desc = str(row.get('Opportunity Description', '')).lower()
+            name = str(row.get('Opportunity Name', '')).strip().lower()
+            desc = str(row.get('Opportunity Description', '')).strip().lower()
             prop_age = str(row.get('Proposal age', '')).strip()
             
-            # RULE A: HOLD CHECK (Looking for exactly 41 matches as per your sample)
-            if "hold" in name.lower():
+            # 1. PRIORITY: HOLD
+            if "hold" in name:
                 return "On Hold"
             
-            # RULE B: PROPOSAL AGE BYPASS (Active regardless of description)
+            # 2. PRIORITY: NEW PROPOSALS
             if prop_age in ["0-3 Months", "3-6 Months"]:
                 return "Active"
             
-            # RULE C: DESCRIPTION DATE LOGIC
-            # Mark as Update Needed if: Blank, 'nan', or contains 2024
-            if desc == "" or desc == "nan" or "2024" in desc:
-                return "Direct Update Needed" if "direct" in name.lower() else "CRO Update Needed"
+            # 3. DATE SEARCH (Active if 2025/26 or shorthand 25/26 is found)
+            # We look for '25', '26', '/25', '/26' but avoid '2024'
+            active_keywords = ['2025', '2026', '/25', '/26', 'July 25', 'Aug 25', 'Sept 25', 'Oct 25', 'Nov 25', 'Dec 25']
+            is_active = any(key.lower() in desc for key in active_keywords)
             
-            # Mark as Active if: Contains 2025 or 2026
-            if "2025" in desc or "2026" in desc:
+            if is_active and "2024" not in desc:
                 return "Active"
             
-            # RULE D: FALLBACK (Anything else defaults to update needed)
-            return "Direct Update Needed" if "direct" in name.lower() else "CRO Update Needed"
+            # Special case: If it has 2024 and 2025, the future date wins
+            if "2025" in desc or "2026" in desc:
+                return "Active"
 
-        # Apply Logic
+            # 4. FALLBACK: UPDATE NEEDED
+            if "direct" in name:
+                return "Direct Update Needed"
+            else:
+                return "CRO Update Needed"
+
+        # Run Logic
         df['Status'] = df.apply(calculate_status, axis=1)
-        
-        # Apply Region Logic (Looks for any column with "Country" in it)
-        country_col = next((c for c in df.columns if 'Country' in c), None)
-        if country_col:
-            df['Region'] = df[country_col].apply(get_region_fuzzy)
-        else:
-            df['Region'] = "Country Column Not Found"
 
-        # --- 5. DISPLAY RESULTS ---
-        st.subheader("Summary Breakdown")
-        col1, col2 = st.columns(2)
+        # --- 3. SUMMARY DASHBOARD ---
+        st.subheader("Analysis Results")
+        counts = df['Status'].value_counts()
         
-        with col1:
-            st.write("**Status Counts**")
-            st.write(df['Status'].value_counts())
-            
-        with col2:
-            st.write("**Region Counts**")
-            st.write(df['Region'].value_counts())
+        # Displaying your targets for comparison
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Active", counts.get("Active", 0), delta=f"Target: 207")
+        c2.metric("On Hold", counts.get("On Hold", 0), delta=f"Target: 41")
+        c3.metric("Direct Update", counts.get("Direct Update Needed", 0), delta=f"Target: 36")
+        c4.metric("CRO Update", counts.get("CRO Update Needed", 0), delta=f"Target: 27")
 
-        # --- 6. EXCEL DOWNLOAD ---
+        # --- 4. EXPORT ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Cleaned Pipeline')
         
-        st.download_button(
-            label="📥 Download Cleaned Excel File",
-            data=output.getvalue(),
-            file_name=f"Cleaned_Pipeline_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-        st.subheader("Data Preview")
-        st.dataframe(df.head(50))
+        st.download_button("📥 Download Excel", output.getvalue(), "Final_Pipeline.xlsx")
+        st.dataframe(df[['Opportunity Name', 'Status', 'Opportunity Description']].head(50))
