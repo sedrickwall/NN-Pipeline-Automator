@@ -6,8 +6,8 @@ import re
 
 st.set_page_config(page_title="Pipeline Automator", layout="wide")
 
-st.title("🚀 Pipeline Status Automator (v6 - Final Calibration)")
-st.info("Calibrated for: 207 Active | 41 Hold | 36 Direct | 27 CRO")
+st.title("🚀 Pipeline Status Automator (v7)")
+st.markdown("Calibrated to hit your target distribution: **207 Active | 41 Hold | 36 Direct | 27 CRO**")
 
 # --- 1. SETTINGS ---
 st.sidebar.header("Configuration")
@@ -15,90 +15,91 @@ anchor_date = st.sidebar.date_input("Select Anchor Date", datetime(2026, 1, 9))
 
 # --- 2. LOGIC FUNCTIONS ---
 
-def get_latest_year(text):
-    """Finds the highest/latest year mentioned in the description."""
+def get_first_line_year(text):
+    """
+    Looks only at the first line of notes to find the date of the latest update.
+    Returns the year (e.g., 2024, 2025) or None.
+    """
     if not isinstance(text, str) or text.strip() == "" or text.lower() == "nan":
         return None
     
-    # Extract all 4-digit years (2023-2027)
-    years = re.findall(r'\b(202[3-7])\b', text)
+    # We only care about the very first line
+    first_line = text.split('\n')[0].strip().upper()
     
-    # Extract 2-digit years with context (e.g., Oct 25, /26)
-    months = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC'
-    short_years = re.findall(rf'(?:{months})[\s-]?(\d{{2}})\b', text, re.IGNORECASE)
-    slash_years = re.findall(r'/(2[4-7])\b', text)
+    # Snippet search: Look for year markers in the first 30 characters
+    snippet = first_line[:35]
     
-    found_years = [int(y) for y in years]
-    found_years += [2000 + int(y) for y in short_years if 23 <= int(y) <= 27]
-    found_years += [2000 + int(y) for y in slash_years]
+    # 1. Look for 4-digit years (2024-2027)
+    y4 = re.findall(r'202[3-7]', snippet)
+    if y4: return int(y4[0])
     
-    return max(found_years) if found_years else None
+    # 2. Look for Month + 2-digit Year (e.g., OCT 25, July 25, 25-AUG)
+    months = r'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER'
+    y2_match = re.findall(rf'({months}).*?\b(\d{{2}})\b', snippet)
+    if y2_match: return 2000 + int(y2_match[0][1])
+        
+    # 3. Look for Slash dates (e.g., /25)
+    slash_match = re.findall(r'/(2[4-7])\b', snippet)
+    if slash_match: return 2000 + int(slash_match[0])
+    
+    return None
 
-def calculate_status(row, name_col, desc_col, age_col):
-    name = str(row.get(name_col, '')).strip().lower()
-    desc = str(row.get(desc_col, '')).strip()
-    # Cleaning 'Proposal age' string for comparison
-    prop_age = str(row.get(age_key, '')).lower().replace('to', '-').replace(' ', '')
+def calculate_status(row, name_key, desc_key, age_key):
+    name = str(row.get(name_key, '')).strip().lower()
+    desc = str(row.get(desc_key, ''))
+    prop_age = str(row.get(age_key, '')).lower().strip()
     
-    # 1. HOLD CHECK (Priority 1)
-    if any(x in name for x in ["hold", "(hold)", "[hold]"]):
+    # 1. PRIORITY: HOLD
+    if any(x in name for x in ["hold", "[hold]", "(hold)"]):
         return "Hold"
     
-    # 2. NEW PROPOSAL BYPASS (Priority 2)
-    # Catches '0-3months', '3-6months', '0-3', '3-6'
-    if any(x in prop_age for x in ["0-3", "3-6"]):
-        # Rare exception: if name is Direct and desc is empty, it might need update
-        # but overwhelmingly, 0-6 months is Active in your data.
+    # 2. PRIORITY: NEW PROPOSALS (0-6 Months is Active)
+    if any(x in prop_age for x in ["0 to 3", "3 to 6", "0-3", "3-6"]):
         return "Active"
     
-    # 3. DATE-BASED ACTIVE CHECK
-    latest_year = get_latest_year(desc)
+    # 3. DATE CHECK (First Line Only)
+    year = get_first_line_year(desc)
+    if year:
+        if year >= 2025:
+            return "Active"
+        else:
+            # Update needed because the latest note is from 2024 or earlier
+            return "Direct Update Needed" if "direct" in name else "CRO Update Needed"
     
-    # If 2025 or later is mentioned, it is Active
-    if latest_year and latest_year >= 2025:
-        return "Active"
-    
-    # If "Active" keyword is in the description and year is not 2024
-    if "active" in desc.lower() and (latest_year is None or latest_year > 2024):
-        return "Active"
+    # 4. FALLBACK: If no date found in the first line
+    return "Direct Update Needed" if "direct" in name else "CRO Update Needed"
 
-    # 4. FALLBACK: UPDATE NEEDED
-    if "direct" in name:
-        return "Direct Update Needed"
-    else:
-        return "CRO Uipdate Needed"
-
-# --- 3. FILE PROCESSING ---
+# --- 3. APP PROCESSING ---
 
 uploaded_file = st.file_uploader("Upload Salesforce Export", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    if "df_result" not in st.session_state:
+    # Logic to process and store result in session to keep download stable
+    if "df_final" not in st.session_state:
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df.columns = [c.strip() for c in df.columns]
         
-        # Identify columns
-        name_key = next((c for c in df.columns if 'Opportunity Name' in c), 'Opportunity Name')
-        desc_key = next((c for c in df.columns if 'Description' in c), 'Opportunity Description')
-        age_key = next((c for c in df.columns if 'Age' in c), 'Proposal Age')
+        # Mapping Columns
+        nk = next((c for c in df.columns if 'Opportunity Name' in c), 'Opportunity Name')
+        dk = next((c for c in df.columns if 'Description' in c), 'Opportunity Description')
+        ak = next((c for c in df.columns if 'Age' in c), 'Proposal Age')
         
-        # Process Logic
-        df['Status'] = df.apply(lambda r: calculate_status(r, name_key, desc_key, age_key), axis=1)
-        st.session_state.df_result = df
-        st.session_state.cols = (name_key, desc_key, age_key)
+        df['Status'] = df.apply(lambda r: calculate_status(r, nk, dk, ak), axis=1)
+        
+        st.session_state.df_final = df
+        st.session_state.keys = (nk, dk, ak)
 
-    df = st.session_state.df_result
-    name_key, desc_key, age_key = st.session_state.cols
+    df = st.session_state.df_final
+    nk, dk, ak = st.session_state.keys
 
-    # --- 4. SUMMARY DASHBOARD ---
+    # --- 4. SUMMARY METRICS ---
     counts = df['Status'].value_counts()
-    
-    st.subheader("Final Classification Summary")
+    st.subheader("Classification Results")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Active", counts.get("Active", 0), "Target: 207")
     c2.metric("Hold", counts.get("Hold", 0), "Target: 41")
     c3.metric("Direct Update", counts.get("Direct Update Needed", 0), "Target: 36")
-    c4.metric("CRO Update", counts.get("CRO Uipdate Needed", 0), "Target: 27")
+    c4.metric("CRO Update", counts.get("CRO Update Needed", 0), "Target: 27")
 
     # --- 5. EXCEL EXPORT ---
     output = io.BytesIO()
@@ -112,18 +113,14 @@ if uploaded_file:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # --- 6. PREVIEW WITH BOLD DATES ---
-    st.subheader("Logic Preview")
-    
-    def highlight_logic(text):
-        if not isinstance(text, str): return text
-        # Bold 25/26/27 and "Hold"
-        return re.sub(r'(2[5-7]|202[5-7]|Hold)', r'**\1**', text, flags=re.IGNORECASE)
+    # --- 6. PREVIEW & HIGHLIGHTING ---
+    def highlight_first_line(text):
+        if not isinstance(text, str) or '\n' not in text: return text
+        parts = text.split('\n', 1)
+        # Bold the first line to show where the logic focused
+        return f"**{parts[0]}**\n{parts[1]}"
 
-    df_preview = df.copy().head(50)
-    df_preview['Highlighted Notes'] = df_preview[desc_key].apply(highlight_logic)
-    
-    st.dataframe(
-        df_preview[[name_key, age_key, 'Status', 'Highlighted Notes']],
-        use_container_width=True
-    )
+    st.subheader("Audit Preview")
+    df_preview = df.copy().head(100)
+    df_preview['Notes (First Line Bolded)'] = df_preview[dk].apply(highlight_first_line)
+    st.dataframe(df_preview[[nk, ak, 'Status', 'Notes (First Line Bolded)']], use_container_width=True)
