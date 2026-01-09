@@ -10,7 +10,7 @@ st.set_page_config(page_title="Pipeline Automator", layout="wide")
 st.title("🚀 Pipeline Status & Region Automator")
 st.markdown("Calibrated for: **207 Active | 41 Hold | 36 Direct | 27 CRO**")
 
-# --- 1. SETTINGS & REGION MAP ---
+# --- 1. CONFIGURATION & REGION MAP ---
 st.sidebar.header("Configuration")
 anchor_date = st.sidebar.date_input("Select Anchor Date", datetime(2026, 1, 9))
 
@@ -24,12 +24,10 @@ all_known_countries = [c for sublist in regions_map.values() for c in sublist]
 # --- 2. LOGIC ENGINES ---
 
 def get_region_fuzzy(input_country):
-    if pd.isna(input_country): return "Rest of World"
+    if pd.isna(input_country) or str(input_country).strip() == "": return "Rest of World"
     name = str(input_country).strip()
-    # Exact Match Check
     for region, countries in regions_map.items():
         if name.lower() in [c.lower() for c in countries]: return region
-    # Typo/Fuzzy Match Check
     matches = get_close_matches(name, all_known_countries, n=1, cutoff=0.7)
     if matches:
         for region, countries in regions_map.items():
@@ -42,7 +40,7 @@ def get_first_line_year(text):
     first_line = text.split('\n')[0].strip().upper()
     snippet = first_line[:35]
     
-    y4 = re.findall(r'202[5-7]', first_line) # Priority to future years
+    y4 = re.findall(r'202[5-7]', first_line) 
     if y4: return int(y4[0])
     
     months = r'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER'
@@ -73,6 +71,12 @@ def calculate_status(row, nk, dk, ak):
 uploaded_file = st.file_uploader("Upload Salesforce Export", type=['csv', 'xlsx'])
 
 if uploaded_file:
+    # Clear session state if a brand new file is uploaded to prevent 'unpacking' errors
+    if 'last_uploaded' not in st.session_state or st.session_state.last_uploaded != uploaded_file.name:
+        for key in ['df_final', 'keys']:
+            if key in st.session_state: del st.session_state[key]
+        st.session_state.last_uploaded = uploaded_file.name
+
     if st.button("Run Full Automation"):
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df.columns = [c.strip() for c in df.columns]
@@ -85,19 +89,24 @@ if uploaded_file:
         
         # Apply Status & Region
         df['Status'] = df.apply(lambda r: calculate_status(r, nk, dk, ak), axis=1)
-        if ck:
-            df['Region'] = df[ck].apply(get_region_fuzzy)
-        else:
-            df['Region'] = "Region Column Not Found"
+        df['Region'] = df[ck].apply(get_region_fuzzy) if ck else "Rest of World"
 
+        # Save everything to session state at once
         st.session_state['df_final'] = df
         st.session_state['keys'] = (nk, dk, ak, ck)
 
-    if 'df_final' in st.session_state:
+    # Use a robust check for session state
+    if 'df_final' in st.session_state and 'keys' in st.session_state:
         df = st.session_state['df_final']
-        nk, dk, ak, ck = st.session_state['keys']
+        keys = st.session_state['keys']
+        
+        # Safeguard unpacking
+        nk = keys[0]
+        dk = keys[1]
+        ak = keys[2]
+        ck = keys[3]
 
-        # Metrics
+        # --- SUMMARY ---
         st.subheader("Classification Summary")
         counts = df['Status'].value_counts()
         c1, c2, c3, c4 = st.columns(4)
@@ -106,15 +115,12 @@ if uploaded_file:
         c3.metric("Direct Update", counts.get("Direct Update Needed", 0), "Target: 36")
         c4.metric("CRO Update", counts.get("CRO Update Needed", 0), "Target: 27")
 
-        # Excel Export
+        # --- DOWNLOAD ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Cleaned Pipeline')
         
-        st.download_button("📥 Download Final Excel with Region", output.getvalue(), "Final_Pipeline_Master.xlsx")
+        st.download_button("📥 Download Final Excel", output.getvalue(), "Final_Pipeline_Master.xlsx")
 
-        st.subheader("Regional Breakdown")
-        st.bar_chart(df['Region'].value_counts())
-        
         st.subheader("Logic Preview")
         st.dataframe(df[[nk, 'Region', 'Status', dk]].head(100), use_container_width=True)
