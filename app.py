@@ -95,7 +95,7 @@ if uploaded_file:
         df.columns = [c.strip() for c in df.columns]
         
         nk = next((c for c in df.columns if 'Opportunity Name' in c), 'Opportunity Name')
-        dk = next((c for c in df.columns if 'Description' in c), 'Opportunity Description')
+        dk = next((c for c in df.columns if 'Description' in c), 'Opportunity Updates')
         ak = next((c for c in df.columns if 'Age' in c), 'Proposal Age')
         ck = next((c for c in df.columns if 'Country' in c or 'Billing Country' in c), None)
         
